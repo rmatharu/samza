@@ -18,9 +18,11 @@
  */
 package org.apache.samza.clustermanager;
 
+import java.util.Optional;
 import org.apache.samza.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /**
  * This is the allocator thread that will be used by ContainerProcessManager when host-affinity is enabled for a job. It is similar
@@ -44,11 +46,13 @@ public class HostAwareContainerAllocator extends AbstractContainerAllocator {
    * Tracks the expiration of a request for resources.
    */
   private final int requestTimeout;
+  private final Optional<StandbyContainerManager> standbyContainerManager;
 
   public HostAwareContainerAllocator(ClusterResourceManager manager ,
-                                     int timeout, Config config, SamzaApplicationState state) {
+      int timeout, Config config, Optional<StandbyContainerManager> standbyContainerManager, SamzaApplicationState state) {
     super(manager, new ResourceRequestState(true, manager), config, state);
     this.requestTimeout = timeout;
+    this.standbyContainerManager = standbyContainerManager;
   }
 
   /**
@@ -69,7 +73,8 @@ public class HostAwareContainerAllocator extends AbstractContainerAllocator {
       if (hasAllocatedResource(preferredHost)) {
         // Found allocated container at preferredHost
         log.info("Found a matched-container {} on the preferred host. Running on {}", containerID, preferredHost);
-        runStreamProcessor(request, preferredHost);
+        // Try to launch streamProcessor on this preferredHost if it all standby constraints are met
+        checkStandbyConstraintsAndRunStreamProcessor(request, preferredHost, peekAllocatedResource(preferredHost));
         state.matchedResourceRequests.incrementAndGet();
       } else {
         log.info("Did not find any allocated resources on preferred host {} for running container id {}",
@@ -80,13 +85,27 @@ public class HostAwareContainerAllocator extends AbstractContainerAllocator {
 
         if (expired) {
           updateExpiryMetrics(request);
-          if (resourceAvailableOnAnyHost) {
-            log.info("Request for container: {} on {} has expired. Running on ANY_HOST", request.getContainerID(), request.getPreferredHost());
-            runStreamProcessor(request, ResourceRequestState.ANY_HOST);
+
+          if (standbyContainerManager.isPresent()) {
+
+            // if standby is enabled and an alternative-anyhost-resource is available, we try to use it
+            if (resourceAvailableOnAnyHost) {
+              standbyContainerManager.get().handleExpiredResourceRequest(containerID, request, Optional.of(peekAllocatedResource(ResourceRequestState.ANY_HOST)), this, resourceRequestState);
+            } else {
+              standbyContainerManager.get().handleExpiredResourceRequest(containerID, request, Optional.empty(), this, resourceRequestState);
+            }
+
           } else {
-            log.info("Request for container: {} on {} has expired. Requesting additional resources on ANY_HOST.", request.getContainerID(), request.getPreferredHost());
-            resourceRequestState.cancelResourceRequest(request);
-            requestResource(containerID, ResourceRequestState.ANY_HOST);
+
+            if (resourceAvailableOnAnyHost) {
+              log.info("Request for container: {} on {} has expired. Running on ANY_HOST", request.getContainerID(), request.getPreferredHost());
+              runStreamProcessor(request, ResourceRequestState.ANY_HOST);
+            } else {
+              log.info("Request for container: {} on {} has expired. Requesting additional resources on ANY_HOST.", request.getContainerID(), request.getPreferredHost());
+              resourceRequestState.cancelResourceRequest(request);
+              requestResource(containerID, ResourceRequestState.ANY_HOST);
+            }
+
           }
         } else {
           log.info("Request for container: {} on {} has not yet expired. Request creation time: {}. Request timeout: {}",
@@ -96,6 +115,7 @@ public class HostAwareContainerAllocator extends AbstractContainerAllocator {
       }
     }
   }
+
 
   /**
    * Checks if a request has expired.
@@ -118,5 +138,16 @@ public class HostAwareContainerAllocator extends AbstractContainerAllocator {
     } else {
       state.expiredPreferredHostRequests.incrementAndGet();
     }
+  }
+
+  private void checkStandbyConstraintsAndRunStreamProcessor(SamzaResourceRequest request, String preferredHost, SamzaResource samzaResource) {
+    // If standby tasks are not enabled run streamprocessor on the given host
+    if (!this.standbyContainerManager.isPresent()) {
+      runStreamProcessor(request, preferredHost);
+      return;
+    }
+
+    this.standbyContainerManager.get().checkStandbyConstraintsAndRunStreamProcessor(request, preferredHost,
+        samzaResource, this, resourceRequestState);
   }
 }

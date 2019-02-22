@@ -18,6 +18,7 @@
  */
 package org.apache.samza.clustermanager;
 
+import java.util.Optional;
 import org.apache.samza.SamzaException;
 import org.apache.samza.config.ClusterManagerConfig;
 import org.apache.samza.config.Config;
@@ -26,6 +27,7 @@ import org.apache.samza.coordinator.JobModelManager;
 import org.apache.samza.coordinator.stream.messages.SetContainerHostMapping;
 import org.apache.samza.metrics.ContainerProcessManagerMetrics;
 import org.apache.samza.metrics.MetricsRegistryMap;
+import org.apache.samza.storage.kv.Entry;
 import org.apache.samza.util.Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,6 +79,9 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
   private final AbstractContainerAllocator containerAllocator;
   private final Thread allocatorThread;
 
+  // The StandbyContainerManager manages standby-aware allocation and failover of containers
+  private final Optional<StandbyContainerManager> standbyContainerManager;
+
   /**
    * A standard interface to request resources.
    */
@@ -115,6 +120,7 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
     this.metrics = new ContainerProcessManagerMetrics(config, state, registry);
     this.containerAllocator = allocator;
     this.allocatorThread = new Thread(this.containerAllocator, "Container Allocator Thread");
+    this.standbyContainerManager = Optional.empty();
   }
 
   public ContainerProcessManager(Config config,
@@ -130,8 +136,14 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
     this.clusterResourceManager = checkNotNull(factory.getClusterResourceManager(this, state));
     this.metrics = new ContainerProcessManagerMetrics(config, state, registry);
 
+    if (jobConfig.getStandbyTasksEnabled()) {
+      this.standbyContainerManager = Optional.of(new StandbyContainerManager(state, clusterResourceManager));
+    } else {
+      this.standbyContainerManager = Optional.empty();
+    }
+
     if (this.hostAffinityEnabled) {
-      this.containerAllocator = new HostAwareContainerAllocator(clusterResourceManager, clusterManagerConfig.getContainerRequestTimeout(), config, state);
+      this.containerAllocator = new HostAwareContainerAllocator(clusterResourceManager, clusterManagerConfig.getContainerRequestTimeout(), config, standbyContainerManager, state);
     } else {
       this.containerAllocator = new ContainerAllocator(clusterResourceManager, config, state);
     }
@@ -155,10 +167,10 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
 
     this.clusterResourceManager = resourceManager;
     this.metrics = new ContainerProcessManagerMetrics(config, state, registry);
-
+    this.standbyContainerManager = Optional.empty();
 
     if (this.hostAffinityEnabled) {
-      this.containerAllocator = new HostAwareContainerAllocator(clusterResourceManager, clusterManagerConfig.getContainerRequestTimeout(), config, state);
+      this.containerAllocator = new HostAwareContainerAllocator(clusterResourceManager, clusterManagerConfig.getContainerRequestTimeout(), config, this.standbyContainerManager, state);
     } else {
       this.containerAllocator = new ContainerAllocator(clusterResourceManager, config, state);
     }
@@ -185,14 +197,12 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
     clusterResourceManager.start();
 
     log.info("Starting the Samza task manager");
-    final int containerCount = jobConfig.getContainerCount();
 
-    state.containerCount.set(containerCount);
-    state.neededContainers.set(containerCount);
+    state.containerCount.set(state.jobModelManager.jobModel().getContainers().size());
+    state.neededContainers.set(state.jobModelManager.jobModel().getContainers().size());
 
     // Request initial set of containers
     Map<String, String> containerToHostMapping = state.jobModelManager.jobModel().getAllContainerLocality();
-
     containerAllocator.requestResources(containerToHostMapping);
 
     // Start container allocator thread
@@ -294,11 +304,13 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
         // if the AM released the container.
         log.info("Released container {} was assigned task group ID {}. Requesting a new container for the task group.", containerIdStr, containerId);
 
+        state.failedContainersStatus.put(containerId, containerStatus);
+
         state.neededContainers.incrementAndGet();
         state.jobHealthy.set(false);
 
-          // request a container on new host
-        containerAllocator.requestResource(containerId, ResourceRequestState.ANY_HOST);
+        // handle container stop due to node fail
+        this.handleContainerStop(containerId, containerStatus.getResourceID(), ResourceRequestState.ANY_HOST, exitStatus);
         break;
 
       default:
@@ -307,7 +319,7 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
         log.info("Container " + containerIdStr + " failed with exit code . " + exitStatus + " - " + containerStatus.getDiagnostics() + " containerID is " + containerId);
 
         state.failedContainers.incrementAndGet();
-        state.failedContainersStatus.put(containerIdStr, containerStatus);
+        state.failedContainersStatus.put(containerId, containerStatus);
         state.jobHealthy.set(false);
 
         state.neededContainers.incrementAndGet();
@@ -371,9 +383,7 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
         }
 
         if (!tooManyFailedContainers) {
-          log.info("Requesting a new container ");
-          // Request a new container
-          containerAllocator.requestResource(containerId, lastSeenOn);
+          handleContainerStop(containerId, containerStatus.getResourceID(), lastSeenOn, exitStatus);
         }
 
     }
@@ -428,8 +438,11 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
     String containerId = getPendingContainerId(resource.getResourceID());
     log.info("Failed container ID: {} for resourceId: {}", containerId, resource.getResourceID());
 
-    // 3. Re-request resources on ANY_HOST in case of launch failures on the preferred host.
-    if (containerId != null) {
+    // 3. Re-request resources on ANY_HOST in case of launch failures on the preferred host, if standby are not enabled
+    // otherwise calling standbyContainerManager
+    if (containerId != null && standbyContainerManager.isPresent()) {
+      this.standbyContainerManager.get().handleContainerLaunchFail(containerId, resource.getResourceID(), containerAllocator);
+    } else if (containerId != null) {
       log.info("Launch of container ID: {} failed on host: {}. Falling back to ANY_HOST", containerId, resource.getHost());
       containerAllocator.requestResource(containerId, ResourceRequestState.ANY_HOST);
     } else {
@@ -484,5 +497,13 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
     return null;
   }
 
+  private void handleContainerStop(String containerID, String resourceID, String preferredHost, int exitStatus) {
+    if (standbyContainerManager.isPresent()) {
+      standbyContainerManager.get().handleContainerStop(containerID, resourceID, preferredHost, exitStatus, containerAllocator);
+      return;
+    }
 
+    // If StandbyTasks are not enabled, we simply make a request for the preferredHost
+    containerAllocator.requestResource(containerID, preferredHost);
+  }
 }

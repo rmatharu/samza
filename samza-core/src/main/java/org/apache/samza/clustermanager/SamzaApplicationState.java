@@ -78,7 +78,8 @@ public class SamzaApplicationState {
   public final AtomicInteger releasedContainers = new AtomicInteger(0);
 
   /**
-   * ContainerStatus of failed containers.
+   * ContainerStatuses of failed containers indexed by samzaContainerId.
+   * Written by the AMRMCallbackThread, read by the ContainerAllocator thread when performing active-standby container failover.
    */
   public final ConcurrentMap<String, SamzaResourceStatus> failedContainersStatus = new ConcurrentHashMap<String, SamzaResourceStatus>();
 
@@ -110,7 +111,7 @@ public class SamzaApplicationState {
    */
   public final ConcurrentMap<String, SamzaResource> runningContainers = new ConcurrentHashMap<String, SamzaResource>(0);
 
-  /**
+   /**
    * Final status of the application. Made to be volatile s.t. changes will be visible in multiple threads.
    */
   public volatile SamzaAppStatus status = SamzaAppStatus.UNDEFINED;
@@ -140,6 +141,28 @@ public class SamzaApplicationState {
    * {@link ContainerProcessManager}
    */
   public final AtomicInteger redundantNotifications = new AtomicInteger(0);
+
+  /**
+   * Number of container allocations that proceeded because they met standby container constraints.
+   */
+  public final AtomicInteger successfulStandbyAllocations = new AtomicInteger(0);
+
+  /**
+   * Number of container allocations that were dis-allowed because they
+   * did not meet standby container constraints.
+   */
+  public final AtomicInteger failedStandbyAllocations = new AtomicInteger(0);
+
+  /**
+   * Number of active container standbyContainerState initiated in which a standby container was found.
+   * If two standby containers had to selected for one failing active, it counts as two.
+   */
+  public final AtomicInteger failoversToStandby = new AtomicInteger(0);
+
+  /**
+   * Number of active container standbyContainerState initiated in which a standby container was NOT found.
+  */
+  public final AtomicInteger failoversToAnyHost = new AtomicInteger(0);
 
   public SamzaApplicationState(JobModelManager jobModelManager) {
     this.jobModelManager = jobModelManager;
