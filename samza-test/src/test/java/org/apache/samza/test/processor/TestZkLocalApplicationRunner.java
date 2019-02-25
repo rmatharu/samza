@@ -60,7 +60,6 @@ import org.apache.samza.coordinator.stream.CoordinatorStreamValueSerde;
 import org.apache.samza.job.ApplicationStatus;
 import org.apache.samza.job.model.ContainerModel;
 import org.apache.samza.job.model.JobModel;
-import org.apache.samza.job.model.TaskMode;
 import org.apache.samza.job.model.TaskModel;
 import org.apache.samza.metadatastore.MetadataStore;
 import org.apache.samza.metadatastore.MetadataStoreFactory;
@@ -835,7 +834,6 @@ public class TestZkLocalApplicationRunner extends StandaloneIntegrationTestHarne
     }
 
     Assert.assertEquals(expectedTaskAssignments, actualTaskAssignments);
-    Assert.assertEquals(32, jobModel.maxChangeLogStreamPartitions);
   }
 
   /**
@@ -937,7 +935,6 @@ public class TestZkLocalApplicationRunner extends StandaloneIntegrationTestHarne
     // Validate that the new JobModel has the expected task assignments.
     actualTaskAssignments = getTaskAssignments(jobModel);
     Assert.assertEquals(expectedTaskAssignments, actualTaskAssignments);
-    Assert.assertEquals(32, jobModel.maxChangeLogStreamPartitions);
   }
 
   /**
@@ -953,9 +950,7 @@ public class TestZkLocalApplicationRunner extends StandaloneIntegrationTestHarne
         if (!taskAssignments.containsKey(taskModel.getTaskName())) {
           taskAssignments.put(taskModel.getTaskName(), new HashSet<>());
         }
-        if (taskModel.getTaskMode() == TaskMode.Active) {
-          taskAssignments.get(taskModel.getTaskName()).addAll(taskModel.getSystemStreamPartitions());
-        }
+        taskAssignments.get(taskModel.getTaskName()).addAll(taskModel.getSystemStreamPartitions());
       }
     }
     return taskAssignments;
