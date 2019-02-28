@@ -27,7 +27,6 @@ import org.apache.samza.coordinator.JobModelManager;
 import org.apache.samza.coordinator.stream.messages.SetContainerHostMapping;
 import org.apache.samza.metrics.ContainerProcessManagerMetrics;
 import org.apache.samza.metrics.MetricsRegistryMap;
-import org.apache.samza.storage.kv.Entry;
 import org.apache.samza.util.Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -180,8 +179,8 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
   }
 
   public boolean shouldShutdown() {
-    log.debug(" TaskManager state: Completed containers: {}, Configured containers: {}, Is there too many FailedContainers: {}, Is AllocatorThread alive: {} "
-      , new Object[]{state.completedContainers.get(), state.containerCount, tooManyFailedContainers ? "yes" : "no", allocatorThread.isAlive() ? "yes" : "no"});
+    log.debug(" TaskManager state: Completed containers: {}, Configured containers: {}, Is there too many FailedContainers: {}, Is AllocatorThread alive: {} ",
+      state.completedContainers.get(), state.containerCount, tooManyFailedContainers ? "yes" : "no", allocatorThread.isAlive() ? "yes" : "no");
 
     if (exceptionOccurred != null) {
       log.error("Exception in ContainerProcessManager", exceptionOccurred);
@@ -304,8 +303,6 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
         // if the AM released the container.
         log.info("Released container {} was assigned task group ID {}. Requesting a new container for the task group.", containerIdStr, containerId);
 
-        state.failedContainersStatus.put(containerId, containerStatus);
-
         state.neededContainers.incrementAndGet();
         state.jobHealthy.set(false);
 
@@ -319,7 +316,7 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
         log.info("Container " + containerIdStr + " failed with exit code . " + exitStatus + " - " + containerStatus.getDiagnostics() + " containerID is " + containerId);
 
         state.failedContainers.incrementAndGet();
-        state.failedContainersStatus.put(containerId, containerStatus);
+        state.failedContainersStatus.put(containerIdStr, containerStatus);
         state.jobHealthy.set(false);
 
         state.neededContainers.incrementAndGet();
@@ -500,10 +497,9 @@ public class ContainerProcessManager implements ClusterResourceManager.Callback 
   private void handleContainerStop(String containerID, String resourceID, String preferredHost, int exitStatus) {
     if (standbyContainerManager.isPresent()) {
       standbyContainerManager.get().handleContainerStop(containerID, resourceID, preferredHost, exitStatus, containerAllocator);
-      return;
+    } else {
+      // If StandbyTasks are not enabled, we simply make a request for the preferredHost
+      containerAllocator.requestResource(containerID, preferredHost);
     }
-
-    // If StandbyTasks are not enabled, we simply make a request for the preferredHost
-    containerAllocator.requestResource(containerID, preferredHost);
   }
 }
