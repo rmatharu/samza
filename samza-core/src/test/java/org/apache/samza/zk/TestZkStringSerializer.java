@@ -1,5 +1,4 @@
 /*
- *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,13 +15,24 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
- *
  */
+package org.apache.samza.zk;
 
-package org.apache.samza.system.kafka_deprecated
+import org.junit.Assert;
+import org.junit.Test;
 
-import org.apache.samza.SamzaException
 
-private[kafka_deprecated] trait Toss {
-  def toss(s:String) = throw new SamzaException(s)
+public class TestZkStringSerializer {
+
+  @Test
+  public void testStringSerialization() throws Exception {
+    ZkStringSerializer serde = new ZkStringSerializer();
+    Assert.assertEquals(null, serde.serialize(null));
+    Assert.assertEquals(null, serde.deserialize(null));
+
+    String fooBar = "37";
+    byte[] fooBarBytes = serde.serialize(fooBar);
+    Assert.assertArrayEquals(fooBar.getBytes("UTF-8"), fooBarBytes);
+    Assert.assertEquals(fooBar, serde.deserialize(fooBarBytes));
+  }
 }

@@ -16,20 +16,22 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+package org.apache.samza.config;
 
-package org.apache.samza.system.kafka
+import java.util.Optional;
 
-import kafka.common.TopicAndPartition
-import kafka.message.MessageAndOffset
 
-private[kafka] trait MessageSink {
-  def setIsAtHighWatermark(tp: TopicAndPartition, isAtHighWatermark: Boolean): Unit
+public class FileSystemCheckpointManagerConfig extends MapConfig {
+  /**
+   * Path on local file system where checkpoints should be stored.
+   */
+  private static final String CHECKPOINT_MANAGER_ROOT = "task.checkpoint.path";
 
-  def addMessage(tp: TopicAndPartition, msg: MessageAndOffset, highWatermark: Long): Unit
+  public FileSystemCheckpointManagerConfig(Config config) {
+    super(config);
+  }
 
-  def abdicate(tp: TopicAndPartition, nextOffset: Long): Unit
-
-  def refreshDropped(): Unit
-
-  def needsMoreMessages(tp: TopicAndPartition): Boolean
+  public Optional<String> getFileSystemCheckpointRoot() {
+    return Optional.ofNullable(get(CHECKPOINT_MANAGER_ROOT));
+  }
 }

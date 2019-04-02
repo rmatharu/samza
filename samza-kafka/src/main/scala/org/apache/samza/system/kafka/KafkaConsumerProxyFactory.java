@@ -1,4 +1,5 @@
 /*
+ *
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,20 +16,14 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
+ *
  */
+package org.apache.samza.system.kafka;
 
-package org.apache.samza.serializers
-
-import kafka.serializer.StringEncoder
-import kafka.serializer.StringDecoder
-
-import org.junit.Assert._
-import org.junit.Test
-
-class TestKafkaSerde {
-  @Test
-  def testKafkaSerdeShouldWrapEncoderAndDecoders {
-    val serde = new KafkaSerde(new StringEncoder, new StringDecoder)
-    assertEquals("test", serde.fromBytes(serde.toBytes("test")))
-  }
+/**
+ * Used to create an instance of {@link KafkaConsumerProxy}. This can be overridden in case an extension of
+ * {@link KafkaConsumerProxy} needs to be used within kafka system components like {@link KafkaSystemConsumer}.
+ */
+public interface KafkaConsumerProxyFactory<K, V> {
+  KafkaConsumerProxy<K, V> create(KafkaSystemConsumer<K, V>.KafkaConsumerMessageSink messageSink);
 }
